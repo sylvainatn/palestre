@@ -6,7 +6,7 @@
 | Date        | 2026-10-18                                              |
 | Auteurs     | Sylvain, Shany, Vincent                                 |
 | Statut      | `proposée`                                              |
-| Commits     | _à renseigner au commit du module `corpus`_             |
+| Commits     | 52a428a                                                 |
 | Clauses     | README §3 (dépendances), `corpus/FORMAT.md`, K.3, B.1   |
 
 ## 1. Contexte

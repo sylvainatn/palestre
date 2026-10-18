@@ -6,7 +6,7 @@
 | Date        | 2026-10-18                                                  |
 | Auteurs     | Sylvain, Shany, Vincent                                     |
 | Statut      | `proposée`                                                  |
-| Commits     | _à renseigner au commit du chargeur_                        |
+| Commits     | 52a428a                                                     |
 | Clauses     | A.1, A.2, A.3, B.2 (étapes 1 à 3), B.5, K.2 (borne de trame) |
 
 ## 1. Contexte

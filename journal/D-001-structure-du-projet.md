@@ -6,7 +6,7 @@
 | Date        | 2026-10-18                                                                   |
 | Auteurs     | Sylvain, Shany, Vincent                                                      |
 | Statut      | `proposée`                                                                   |
-| Commits     | _à renseigner au commit d'initialisation_                                    |
+| Commits     | 52a428a                                                                      |
 | Clauses     | README §2 (deux composants `pbc` / `exec`), §3 (contraintes), §5 (critère 1) |
 
 ## 1. Contexte
