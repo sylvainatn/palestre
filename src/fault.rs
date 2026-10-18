@@ -103,6 +103,24 @@ impl fmt::Display for Fault {
 
 impl std::error::Error for Fault {}
 
+/// Une chaîne qui n'est aucune des seize de B.5.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("faute inconnue `{0}`")]
+pub struct UnknownFault(pub String);
+
+impl std::str::FromStr for Fault {
+    type Err = UnknownFault;
+
+    /// L'inverse de [`Fault::as_str`] : la seule façon de lire une faute depuis le corpus ou
+    /// le fil (K.3). Une chaîne inconnue est refusée, jamais devinée.
+    fn from_str(text: &str) -> Result<Self, UnknownFault> {
+        Fault::ALL
+            .into_iter()
+            .find(|fault| fault.as_str() == text)
+            .ok_or_else(|| UnknownFault(text.to_string()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +144,16 @@ mod tests {
     #[test]
     fn an_unknown_string_is_not_a_fault() {
         assert!(serde_json::from_str::<Fault>("\"BadMagic\"").is_err());
+        assert_eq!(
+            "BadMagic".parse::<Fault>(),
+            Err(UnknownFault("BadMagic".to_string()))
+        );
+    }
+
+    #[test]
+    fn from_str_inverts_as_str() {
+        for fault in Fault::ALL {
+            assert_eq!(fault.as_str().parse::<Fault>(), Ok(fault));
+        }
     }
 }

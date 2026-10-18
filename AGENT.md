@@ -90,8 +90,11 @@ cargo fmt --check
 cargo run -- exec --listen 127.0.0.1:9000     # serveur annexe K (obligatoire)
 ```
 
-Le harnais de corpus (`tests/corpus.rs`) rejoue chaque cas et compare **dans cet ordre** : rappels, `gas_used`,
-`fault`, `act`, `trace`, puis `mem`. Corriger le premier champ faux avant de regarder les suivants.
+Les tests d'intégration vivent dans `tests/` : `corpus_load.rs` (chargeur et décodeur contre les 65 programmes),
+`corpus_cases.rs` (lecture des `case.toml`), et `common/mod.rs` pour les aides partagées. Le harnais complet,
+qui exécutera chaque cas et comparera avec `expected.json`, viendra avec la machine ; il comparera **dans cet
+ordre** : rappels, `gas_used`, `fault`, `act`, `trace`, puis `mem`. Corriger le premier champ faux avant de
+regarder les suivants.
 
 ## 7. Journal de décisions (ADR) — obligatoire
 
@@ -121,6 +124,10 @@ Conséquences pour un agent :
 
 ## 9. État du dépôt
 
-Au 2026-10-18 le dépôt contient uniquement le sujet (`README.md`, `SPEC-PBC-v1.md`, `corpus/`, `assets/`).
-Aucun `Cargo.toml` n'existe encore. Première étape : initialiser le projet, la CI (`clippy`, `fmt`, `test`) et le
-premier ADR sur la structure des modules.
+Depuis le commit `52a428a` (2026-10-18), le projet Cargo existe avec la CI, et ces modules sont écrits et testés :
+`fault` (les seize fautes), `pbc` (chargeur et décodeur, vérifiés contre les 65 programmes du corpus), `corpus`
+(lecture des `case.toml`). `vm`, `arena` et `net` ne contiennent que leur documentation. Le journal compte trois
+entrées (D-001 à D-003), en statut `proposée` tant que l'équipe n'a pas rempli leur section 4.
+
+Prochaine décision à ouvrir : D-004, la signature du trait `Env` par lequel la machine demande `SENSE`, `ACT` et
+`RAND` à son environnement. Elle précède l'écriture de `vm`.

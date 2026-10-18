@@ -30,8 +30,8 @@ jobs:
       - name: Build
         run: cargo build --all-targets
 
-      - name: Tests
-        run: cargo test --all-targets
+      - name: Tests (unitaires, intégration et exemples de documentation)
+        run: cargo test
 
       - name: Interdits du sujet (README §3)
         # Pas d'async, pas de runtime asynchrone, pas d'interpréteur tiers, pas de générateur de parseur.

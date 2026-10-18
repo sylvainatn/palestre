@@ -7,8 +7,10 @@
 //!
 //! Le sujet interdit les générateurs de parseurs et n'autorise pas la crate `toml` (README §3) :
 //! le lecteur est écrit à la main et ne reconnaît **que** le sous-ensemble de TOML que
-//! `FORMAT.md` emploie (voir `journal/D-003`). Tout ce qui sort de ce sous-ensemble, et toute
-//! clé inconnue, est une erreur : un cas qu'on ne sait pas lire ne doit pas être rejoué à moitié.
+//! `FORMAT.md` emploie (voir `journal/D-003`) : `clé = valeur`, `[[exec]]`, chaînes basiques,
+//! entiers, booléens, tables en ligne et tableaux, ces deux derniers pouvant s'étendre sur
+//! plusieurs lignes. Tout ce qui sort de ce sous-ensemble, toute clé inconnue et toute clé
+//! répétée est une erreur : un cas qu'on ne sait pas lire ne doit pas être rejoué à moitié.
 //!
 //! Ce module ne sert qu'aux tests et aux outils de rejeu ; il n'a rien à voir avec la boucle
 //! d'exécution, et peut allouer librement.
@@ -114,22 +116,27 @@ impl Case {
         };
         // `None` tant qu'aucun `[[exec]]` n'a été vu : les clés vont alors au cas lui-même.
         let mut current: Option<Exec> = None;
+        // La ligne du premier `[[exec]]`, pour nommer le conflit avec `load_error`.
+        let mut first_exec_line: Option<usize> = None;
+        // Les clés déjà vues dans la section courante : TOML interdit de répéter une clé.
+        let mut seen: Vec<String> = Vec::new();
 
-        for (index, raw) in text.lines().enumerate() {
-            let line = index + 1;
+        for (line, content) in logical_lines(text)? {
             let syntax = |message: String| CaseError::Syntax { line, message };
-            let content = strip_comment(raw).trim();
-            if content.is_empty() {
-                continue;
-            }
             if content == "[[exec]]" {
                 if let Some(done) = current.take() {
                     case.execs.push(done);
                 }
                 current = Some(Exec::default());
+                first_exec_line.get_or_insert(line);
+                seen.clear();
                 continue;
             }
-            let (key, value) = parse_key_value(content).map_err(syntax)?;
+            let (key, value) = parse_key_value(&content).map_err(syntax)?;
+            if seen.contains(&key) {
+                return Err(syntax(format!("clé `{key}` donnée deux fois")));
+            }
+            seen.push(key.clone());
             match current.as_mut() {
                 None => case.set_field(&key, value).map_err(syntax)?,
                 Some(exec) => exec.set_field(&key, value).map_err(syntax)?,
@@ -139,9 +146,9 @@ impl Case {
             case.execs.push(done);
         }
 
-        if case.load_error.is_some() && !case.execs.is_empty() {
+        if let (Some(_), Some(line)) = (case.load_error, first_exec_line) {
             return Err(CaseError::Syntax {
-                line: 0,
+                line,
                 message: "un cas de refus de chargement n'a aucune exécution".to_string(),
             });
         }
@@ -154,11 +161,10 @@ impl Case {
             "category" => self.category = value.into_string(key)?,
             "clause" => self.clause = value.into_string(key)?,
             "load_error" => {
-                let name = value.into_string(key)?;
-                let fault = Fault::ALL
-                    .into_iter()
-                    .find(|fault| fault.as_str() == name)
-                    .ok_or_else(|| format!("`load_error` : faute inconnue `{name}`"))?;
+                let fault = value
+                    .into_string(key)?
+                    .parse::<Fault>()
+                    .map_err(|err| format!("`load_error` : {err}"))?;
                 self.load_error = Some(fault);
             }
             other => return Err(format!("clé inconnue hors d'un `[[exec]]` : `{other}`")),
@@ -178,17 +184,21 @@ impl Exec {
                     .ok_or_else(|| format!("`budget` doit être dans 1..=65535, pas {budget}"))?;
             }
             "mem" => {
+                let mut cells_seen: Vec<usize> = Vec::new();
                 for (cell, value) in value.into_table(key)? {
                     let index = cell
                         .parse::<usize>()
                         .ok()
                         .filter(|i| *i < MEM_SIZE)
                         .ok_or_else(|| format!("`mem` : cellule `{cell}` hors de 0..=255"))?;
-                    let slot = self
-                        .mem
-                        .get_mut(index)
-                        .ok_or_else(|| format!("`mem` : cellule `{cell}` hors de 0..=255"))?;
-                    *slot = value.into_int("mem")?;
+                    if cells_seen.contains(&index) {
+                        return Err(format!("`mem` : cellule `{cell}` donnée deux fois"));
+                    }
+                    cells_seen.push(index);
+                    // `index < MEM_SIZE` vient d'être vérifié : `get_mut` ne peut pas rendre `None`.
+                    if let Some(slot) = self.mem.get_mut(index) {
+                        *slot = value.into_int("mem")?;
+                    }
                 }
             }
             "answers" => {
@@ -212,14 +222,11 @@ impl Answer {
         };
         match key.as_str() {
             "sense" => Ok(Answer::Sense(value.into_int(&key)?)),
-            "sense_fault" => {
-                let name = value.into_string(&key)?;
-                Fault::ALL
-                    .into_iter()
-                    .find(|fault| fault.as_str() == name)
-                    .map(Answer::SenseFault)
-                    .ok_or_else(|| format!("`sense_fault` : faute inconnue `{name}`"))
-            }
+            "sense_fault" => value
+                .into_string(&key)?
+                .parse::<Fault>()
+                .map(Answer::SenseFault)
+                .map_err(|err| format!("`sense_fault` : {err}")),
             "act" => Ok(Answer::Act(value.into_bool(&key)?)),
             "rand" => Ok(Answer::Rand(value.into_int(&key)?)),
             other => Err(format!("réponse inconnue `{other}`")),
@@ -228,10 +235,77 @@ impl Answer {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Le sous-ensemble de TOML de FORMAT.md : une ligne `clé = valeur`, où une valeur est une chaîne
-// `"…"`, un entier, `true`/`false`, une table en ligne `{ clé = valeur, … }` ou un tableau
-// `[ valeur, … ]`.
+// Le sous-ensemble de TOML de FORMAT.md : une ligne logique `clé = valeur`, où une valeur est une
+// chaîne `"…"`, un entier, `true`/`false`, une table en ligne `{ clé = valeur, … }` ou un
+// tableau `[ valeur, … ]`. Une table ou un tableau peut continuer sur les lignes suivantes.
 // ---------------------------------------------------------------------------------------------
+
+/// Découpe le texte en lignes logiques, numérotées par leur première ligne physique.
+///
+/// Les commentaires et les lignes vides sont retirés. Une ligne dont un `[` ou un `{` reste
+/// ouvert se poursuit sur la suivante, comme TOML l'autorise pour un tableau ou une table en
+/// ligne : c'est la forme naturelle d'une longue liste `answers`.
+fn logical_lines(text: &str) -> Result<Vec<(usize, String)>, CaseError> {
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut start = 0;
+    let mut depth: i32 = 0;
+
+    for (index, raw) in text.lines().enumerate() {
+        let line = index + 1;
+        let (content, nesting) = strip_comment(raw);
+        let content = content.trim();
+        if depth == 0 {
+            if content.is_empty() {
+                continue;
+            }
+            start = line;
+        } else if !content.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(content);
+        depth += nesting;
+        if depth < 0 {
+            return Err(CaseError::Syntax {
+                line,
+                message: "`]` ou `}` sans ouverture".to_string(),
+            });
+        }
+        if depth == 0 {
+            lines.push((start, std::mem::take(&mut current)));
+        }
+    }
+    if depth > 0 {
+        return Err(CaseError::Syntax {
+            line: start,
+            message: "tableau ou table non fermé".to_string(),
+        });
+    }
+    Ok(lines)
+}
+
+/// Retire un commentaire `# …` qui n'est pas dans une chaîne, et compte les `[`/`{` ouverts
+/// moins les `]`/`}` fermés hors des chaînes.
+fn strip_comment(line: &str) -> (&str, i32) {
+    let mut in_string = false;
+    let mut nesting = 0;
+    let mut bytes = line.bytes().enumerate();
+    while let Some((at, byte)) = bytes.next() {
+        match byte {
+            b'"' => in_string = !in_string,
+            // Dans une chaîne, l'octet qui suit un antislash est échappé : on le saute,
+            // pour qu'un `\"` ne ferme pas la chaîne.
+            b'\\' if in_string => {
+                bytes.next();
+            }
+            b'[' | b'{' if !in_string => nesting += 1,
+            b']' | b'}' if !in_string => nesting -= 1,
+            b'#' if !in_string => return (line.get(..at).unwrap_or(line), nesting),
+            _ => {}
+        }
+    }
+    (line, nesting)
+}
 
 /// Une valeur TOML du sous-ensemble reconnu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -290,26 +364,7 @@ impl Value {
     }
 }
 
-/// Retire un commentaire `# …` qui n'est pas à l'intérieur d'une chaîne.
-fn strip_comment(line: &str) -> &str {
-    let mut in_string = false;
-    let mut bytes = line.bytes().enumerate();
-    while let Some((at, byte)) = bytes.next() {
-        match byte {
-            b'"' => in_string = !in_string,
-            // Dans une chaîne, l'octet qui suit un antislash est échappé : on le saute,
-            // pour qu'un `\"` ne ferme pas la chaîne.
-            b'\\' if in_string => {
-                bytes.next();
-            }
-            b'#' if !in_string => return line.get(..at).unwrap_or(line),
-            _ => {}
-        }
-    }
-    line
-}
-
-/// Lit une ligne `clé = valeur` entière ; tout reste est une erreur.
+/// Lit une ligne logique `clé = valeur` entière ; tout reste est une erreur.
 fn parse_key_value(content: &str) -> Result<(String, Value), String> {
     let mut scanner = Scanner::new(content);
     let key = scanner.key()?;
@@ -327,7 +382,7 @@ fn parse_key_value(content: &str) -> Result<(String, Value), String> {
     Ok((key, value))
 }
 
-/// Un curseur sur une ligne. Toute lecture passe par `get`, jamais par une indexation.
+/// Un curseur sur une ligne logique. Toute lecture passe par `get`, jamais par une indexation.
 struct Scanner<'a> {
     src: &'a str,
     pos: usize,
@@ -398,7 +453,7 @@ impl<'a> Scanner<'a> {
             Some(b'"') => self.string().map(Value::Str),
             Some(b'{') => self.table().map(Value::Table),
             Some(b'[') => self.array().map(Value::Array),
-            Some(b'-' | b'0'..=b'9') => self.integer().map(Value::Int),
+            Some(b'+' | b'-' | b'0'..=b'9') => self.integer().map(Value::Int),
             Some(b't' | b'f') => self.boolean().map(Value::Bool),
             Some(other) => Err(format!("valeur attendue, trouvé `{}`", other as char)),
             None => Err("valeur attendue, fin de ligne trouvée".to_string()),
@@ -444,20 +499,30 @@ impl<'a> Scanner<'a> {
         }
     }
 
-    /// Un entier décimal signé, avec `_` toléré entre les chiffres comme en TOML.
+    /// Un entier décimal TOML : signe optionnel, chiffres, un `_` au plus entre deux chiffres,
+    /// pas de zéro en tête.
     fn integer(&mut self) -> Result<i64, String> {
         let start = self.pos;
-        if self.peek() == Some(b'-') {
+        if matches!(self.peek(), Some(b'+' | b'-')) {
             self.bump();
         }
         while matches!(self.peek(), Some(b'0'..=b'9' | b'_')) {
             self.bump();
         }
         let text = self.src.get(start..self.pos).unwrap_or("");
-        let digits: String = text.chars().filter(|c| *c != '_').collect();
-        digits
+        let digits = text.trim_start_matches(['+', '-']);
+        let well_formed = !digits.is_empty()
+            && !digits.starts_with('_')
+            && !digits.ends_with('_')
+            && !digits.contains("__")
+            && (digits.len() == 1 || !digits.starts_with('0'));
+        if !well_formed {
+            return Err(format!("entier invalide `{text}`"));
+        }
+        let cleaned: String = text.chars().filter(|c| *c != '_').collect();
+        cleaned
             .parse::<i64>()
-            .map_err(|_| format!("entier invalide `{text}`"))
+            .map_err(|_| format!("entier hors de i64 `{text}`"))
     }
 
     fn boolean(&mut self) -> Result<bool, String> {
@@ -574,9 +639,12 @@ answers = [{ sense = 0 }]   # réponses aux rappels, dans l'ordre où la machine
     }
 
     #[test]
-    fn a_load_error_with_an_exec_is_refused() {
-        let message = error("load_error = \"BadHeader\"\n[[exec]]\n");
-        assert!(message.contains("aucune exécution"), "{message}");
+    fn a_load_error_with_an_exec_is_refused_naming_the_exec_line() {
+        let err = Case::parse("load_error = \"BadHeader\"\n\n[[exec]]\n").unwrap_err();
+        assert!(
+            matches!(&err, CaseError::Syntax { line: 3, message } if message.contains("aucune exécution")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -622,10 +690,52 @@ answers = [{ sense = 0 }]   # réponses aux rappels, dans l'ordre où la machine
     }
 
     #[test]
+    fn an_array_or_a_table_may_span_several_lines() {
+        let case = parse(
+            "[[exec]]\nanswers = [   # une réponse par ligne\n  { sense = 1 },\n  { act = true },\n]\nmem = {\n  0 = 1,\n  1 = 2 }\n[[exec]]\n",
+        );
+        assert_eq!(case.execs.len(), 2);
+        assert_eq!(
+            case.execs[0].answers,
+            vec![Answer::Sense(1), Answer::Act(true)]
+        );
+        assert_eq!(case.execs[0].mem[0], 1);
+        assert_eq!(case.execs[0].mem[1], 2);
+    }
+
+    #[test]
+    fn an_unclosed_array_names_its_first_line() {
+        let err = Case::parse("[[exec]]\nanswers = [\n  { sense = 1 },\n").unwrap_err();
+        assert!(
+            matches!(&err, CaseError::Syntax { line: 2, message } if message.contains("non fermé")),
+            "{err}"
+        );
+        assert!(error("[[exec]]\nbudget = 1 ]").contains("sans ouverture"));
+    }
+
+    #[test]
     fn an_answer_has_exactly_one_key() {
         assert!(error("[[exec]]\nanswers = [{ sense = 1, act = true }]").contains("exactement une"));
         assert!(error("[[exec]]\nanswers = [{ }]").contains("exactement une"));
         assert!(error("[[exec]]\nanswers = [{ feel = 1 }]").contains("réponse inconnue"));
+    }
+
+    #[test]
+    fn a_repeated_key_is_refused() {
+        assert!(error("[[exec]]\nbudget = 10\nbudget = 1000").contains("deux fois"));
+        assert!(
+            error("[[exec]]\nanswers = [{ sense = 1 }]\nanswers = [{ sense = 1 }]")
+                .contains("deux fois")
+        );
+        assert!(error("description = \"a\"\ndescription = \"b\"").contains("deux fois"));
+        assert!(error("[[exec]]\nmem = { 1 = 2, 1 = 3 }").contains("deux fois"));
+        // La même clé dans deux `[[exec]]` différents est normale.
+        assert_eq!(
+            parse("[[exec]]\nbudget = 1\n[[exec]]\nbudget = 2")
+                .execs
+                .len(),
+            2
+        );
     }
 
     #[test]
@@ -656,8 +766,8 @@ answers = [{ sense = 0 }]   # réponses aux rappels, dans l'ordre où la machine
 
     #[test]
     fn comments_and_blank_lines_are_ignored_but_not_inside_strings() {
-        let case = parse("# en-tête\n\ndescription = \"a # b\" # fin\n   \n[[exec]] \n");
-        assert_eq!(case.description, "a # b");
+        let case = parse("# en-tête\n\ndescription = \"a # b [\" # fin {\n   \n[[exec]] \n");
+        assert_eq!(case.description, "a # b [");
         assert_eq!(case.execs.len(), 1);
     }
 
@@ -674,13 +784,19 @@ answers = [{ sense = 0 }]   # réponses aux rappels, dans l'ordre où la machine
         let err = Case::parse("description = \"ok\"\n[[exec]]\nbudget 12\n").unwrap_err();
         assert!(matches!(err, CaseError::Syntax { line: 3, .. }), "{err}");
         assert!(error("[[exec]]\nbudget = 12 extra").contains("inattendu"));
-        assert!(error("[[exec]]\nanswers = [{ sense = 1 }").contains("tableau"));
-        assert!(error("[[exec]]\nmem = { 1 = 2").contains("table"));
         assert!(error("= 3").contains("clé attendue"));
     }
 
     #[test]
-    fn integers_accept_underscores_like_toml() {
+    fn integers_follow_toml() {
         assert_eq!(parse("[[exec]]\nbudget = 1_000").execs[0].budget, 1000);
+        assert_eq!(parse("[[exec]]\nbudget = +12").execs[0].budget, 12);
+        assert_eq!(parse("[[exec]]\nmem = { 0 = 0 }").execs[0].mem[0], 0);
+        assert!(error("[[exec]]\nbudget = 1__0").contains("entier invalide"));
+        assert!(error("[[exec]]\nbudget = _10").contains("valeur attendue"));
+        assert!(error("[[exec]]\nbudget = 10_").contains("entier invalide"));
+        assert!(error("[[exec]]\nbudget = 007").contains("entier invalide"));
+        assert!(error("[[exec]]\nbudget = -").contains("entier invalide"));
+        assert!(error("[[exec]]\nmem = { 0 = 99999999999999999999 }").contains("hors de i64"));
     }
 }

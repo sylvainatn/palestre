@@ -1,23 +1,13 @@
 //! Le lecteur de `case.toml` contre le corpus public : chaque cas se lit, et compte autant
 //! d'exécutions que son `expected.json`.
 
-use std::fs;
-use std::path::{Path, PathBuf};
+mod common;
 
+use std::fs;
+
+use common::case_dirs;
 use palestre::corpus::{Answer, Case};
 use palestre::fault::Fault;
-
-fn case_dirs() -> Vec<PathBuf> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus");
-    let mut dirs = Vec::new();
-    for nature in ["edge", "nominal"] {
-        for entry in fs::read_dir(root.join(nature)).unwrap() {
-            dirs.push(entry.unwrap().path());
-        }
-    }
-    dirs.sort();
-    dirs
-}
 
 #[test]
 fn every_public_case_is_read_and_agrees_with_its_expected_json() {

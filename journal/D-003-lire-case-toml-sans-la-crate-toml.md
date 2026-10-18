@@ -74,6 +74,28 @@ acceptable parce que `FORMAT.md` est le contrat du corpus, et que les cas public
 `strip_comment` et expliquer pourquoi un `#` dans une chaîne n'est pas un commentaire ; constater que le test
 d'intégration lit les 65 cas et trouve 68 exécutions, le même nombre que les `expected.json`._
 
+### Relecture indépendante, le même jour
+
+Une relecture automatisée lancée après l'écriture (un agent de revue de code, séparé de celui qui avait écrit le
+module) a trouvé deux défauts réels dans la première version, tous deux contraires à l'objectif de lecture stricte
+annoncé ci-dessus :
+
+* le lecteur était **ligne par ligne** : un tableau `answers` écrit sur plusieurs lignes, la forme naturelle d'une
+  longue liste, était refusé. Corrigé par un découpage en **lignes logiques** : une ligne dont un `[` ou un `{`
+  reste ouvert se poursuit sur la suivante ;
+* une **clé répétée** était acceptée, et de façon incohérente (un second `answers` s'ajoutait, un second `budget`
+  écrasait). Corrigé : toute clé répétée dans une section, et toute cellule répétée dans `mem`, est une erreur.
+
+La relecture a aussi relevé du nettoyage, appliqué dans le même commit : la conversion chaîne → `Fault` déplacée
+dans `fault.rs` sous `FromStr` (le réseau en aura besoin aussi), les entiers alignés sur TOML (`+5` accepté,
+`1__0` et `007` refusés), le numéro de ligne exact pour le conflit `load_error` / `[[exec]]`, l'aide `case_dirs`
+partagée entre les tests d'intégration, et la CI qui lance `cargo test` sans `--all-targets` pour ne pas sauter
+les exemples de documentation.
+
+Leçon pour l'équipe : le premier jet d'un assistant est à relire comme n'importe quel code, et une seconde lecture
+indépendante trouve ce que l'auteur ne voit plus. Les deux défauts auraient été invisibles sur le corpus public et
+se seraient révélés le jour de la soutenance.
+
 ## 4. Ce que nous avons décidé, et pourquoi
 
 _À compléter par l'équipe au moment d'adopter._
