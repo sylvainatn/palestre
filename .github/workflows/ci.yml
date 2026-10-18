@@ -1,0 +1,46 @@
+# CI — les vérifications que le jury refera (README §5) : fmt, clippy -D warnings, tests.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt + clippy + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (aucun avertissement toléré)
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build
+        run: cargo build --all-targets
+
+      - name: Tests
+        run: cargo test --all-targets
+
+      - name: Interdits du sujet (README §3)
+        # Pas d'async, pas de runtime asynchrone, pas d'interpréteur tiers, pas de générateur de parseur.
+        run: |
+          set -eu
+          if grep -rnE 'async fn|\.await\b|tokio::|futures::' src tests 2>/dev/null; then
+            echo "::error::async/await ou runtime asynchrone détecté (README §3)"; exit 1
+          fi
+          if grep -nE '^(tokio|async-std|futures|wasmi|wasmtime|rhai|revm|mlua|nom|pest|pest_derive|lalrpop|chumsky)\s*=' Cargo.toml; then
+            echo "::error::dépendance interdite dans Cargo.toml (README §3)"; exit 1
+          fi
+          echo "OK : aucun interdit détecté"
