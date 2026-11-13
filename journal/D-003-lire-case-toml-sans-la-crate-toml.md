@@ -98,7 +98,13 @@ se seraient révélés le jour de la soutenance.
 
 ## 4. Ce que nous avons décidé, et pourquoi
 
-_À compléter par l'équipe au moment d'adopter._
+**Proposition à valider par l'équipe — aucune adoption humaine consignée à ce stade.**
+
+Conserver pour le moment le lecteur strict du sous-ensemble documenté, sans ajouter de dépendance directe non autorisée. Une erreur explicite est préférable à un cas partiellement interprété qui ferait accuser la VM à tort.
+
+Ce choix ne promet pas la compatibilité TOML complète. Les cas publics ne prouvent pas que les cas cachés emploieront le même sous-ensemble. L'équipe doit assumer cette limite et demander à l'enseignant si ce sous-ensemble est garanti, ou si la crate `toml` peut être autorisée. La présence d'un combinateur dans les dépendances transitives ne suffit pas à établir une interdiction de l'enseignant.
+
+Validation à renseigner par les personnes concernées : noms, date réelle, option retenue et éventuelles réserves. Le statut reste `proposée` tant que cette validation manque.
 
 ## 5. Ce qui nous ferait changer d'avis
 
@@ -112,3 +118,11 @@ _À compléter par l'équipe au moment d'adopter._
 ## Révisions
 
 _(aucune)_
+
+## Complément de revue — 2026-11-13
+
+Complément rédigé avec Codex à la demande de Shany. Il documente la revue actuelle sans modifier la date d'ouverture ni prétendre à une validation passée.
+
+Lecture de `src/corpus.rs` et `tests/corpus_cases.rs` : validation typée des budgets et de la mémoire, rejet des clés inconnues et répétées, prise en charge des tableaux sur plusieurs lignes. Le test d'intégration compare les réponses scriptées aux fichiers attendus et exige 3 refus de chargement, 68 exécutions et 13 réponses. Il ne lance pas encore la VM et ne garantit pas la lecture de tout TOML valide.
+
+Les vérifications automatisées de cette revue sont consignées dans `journal/verification-2026-11-13.md`. Elles ne remplacent pas la relecture et la signature de l'équipe.

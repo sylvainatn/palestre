@@ -85,7 +85,13 @@ refusés comme `case.toml` le dit ; vérifier à la main que le cas `003-header-
 
 ## 4. Ce que nous avons décidé, et pourquoi
 
-_À compléter par l'équipe au moment d'adopter._
+**Proposition à valider par l'équipe — aucune adoption humaine consignée à ce stade.**
+
+Conserver `Fault` dans un module indépendant, `Program` propriétaire de ses données avec champs privés, et la validation des bornes avant allocation. Cela évite un couplage du chargeur à la VM et des durées de vie propagées aux sessions réseau pour un volume borné.
+
+La validité de `Program` concerne le format de chargement : elle ne garantit pas que chaque instruction soit exécutable sans faute. Les fautes d'exécution restent détectées pendant le tour. Aucune erreur de transport ne sera ajoutée aux seize variantes de `Fault`.
+
+Validation à renseigner par les personnes concernées : noms, date réelle, option retenue et éventuelles réserves. Le statut reste `proposée` tant que cette validation manque.
 
 ## 5. Ce qui nous ferait changer d'avis
 
@@ -101,3 +107,11 @@ _À compléter par l'équipe au moment d'adopter._
 ## Révisions
 
 _(aucune)_
+
+## Complément de revue — 2026-11-13
+
+Complément rédigé avec Codex à la demande de Shany. Il documente la revue actuelle sans modifier la date d'ouverture ni prétendre à une validation passée.
+
+Lecture de `src/fault.rs` et `src/pbc/load.rs` : `Fault` est partagé, les champs de `Program` sont privés et le chargeur contrôle les longueurs avant de construire les vecteurs. Les tests du chargeur couvrent notamment les en-têtes invalides et l'aller-retour encodage/chargement ; ils ne prouvent pas l'absence de toute faute à l'exécution.
+
+Les vérifications automatisées de cette revue sont consignées dans `journal/verification-2026-11-13.md`. Elles ne remplacent pas la relecture et la signature de l'équipe.

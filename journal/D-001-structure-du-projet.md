@@ -88,11 +88,13 @@ sur un commentaire._
 
 ## 4. Ce que nous avons décidé, et pourquoi
 
-_À compléter par l'équipe au moment d'adopter._
+**Proposition à valider par l'équipe — aucune adoption humaine consignée à ce stade.**
 
-Si l'équipe suit la proposition : option A avec les lints de restriction, parce que c'est la structure la plus
-simple à défendre en soutenance, que les contraintes du §3 sont vérifiées par le compilateur et la CI plutôt que par
-relecture, et que rien n'empêche de passer en workspace plus tard si le bonus `no_std` l'exige.
+Retenir un seul crate avec une bibliothèque divisée en modules et un binaire, ainsi que les lints et la CI existants. Cette structure reste simple à expliquer et limite la configuration ; un workspace sera justifié si une extraction réelle devient nécessaire.
+
+Les lints et les recherches textuelles de la CI sont des garde-fous, pas une preuve d'absence de panique ni une analyse exhaustive des dépendances. Les opérations arithmétiques et les chemins d'erreur devront aussi être relus et testés. Ajouter les futures dépendances autorisées au moment où elles deviennent utiles plutôt que par anticipation.
+
+Validation à renseigner par les personnes concernées : noms, date réelle, option retenue et éventuelles réserves. Le statut reste `proposée` tant que cette validation manque.
 
 ## 5. Ce qui nous ferait changer d'avis
 
@@ -107,3 +109,11 @@ relecture, et que rien n'empêche de passer en workspace plus tard si le bonus `
 ## Révisions
 
 _(aucune)_
+
+## Complément de revue — 2026-11-13
+
+Complément rédigé avec Codex à la demande de Shany. Il documente la revue actuelle sans modifier la date d'ouverture ni prétendre à une validation passée.
+
+Lecture de `Cargo.toml`, `src/lib.rs`, `rust-toolchain.toml` et `.github/workflows/ci.yml` : un seul paquet, bibliothèque et binaire, modules séparés, interdiction de `unsafe` et lints de restriction présents. La CI prévoit formatage, Clippy, compilation et tests. Sa recherche textuelle des interdits ne constitue pas une analyse syntaxique Rust.
+
+Les vérifications automatisées de cette revue sont consignées dans `journal/verification-2026-11-13.md`. Elles ne remplacent pas la relecture et la signature de l'équipe.
