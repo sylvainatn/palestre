@@ -8,7 +8,7 @@ fn budget(value: u16) -> NonZeroU16 {
     NonZeroU16::new(value).unwrap()
 }
 
-// Petit interpréteur de test : les instructions métier seront livrées séparément.
+// Instructions restantes nécessaires aux tests du cycle.
 fn execute(
     state: &mut State,
     instr: Instr,
@@ -136,7 +136,11 @@ fn normative_costs_and_budget_boundaries_for_every_opcode() {
                 })
                 .unwrap();
             let expected = match instr {
-                Instr::Halt | Instr::JumpDest | Instr::Gas => None,
+                Instr::Halt | Instr::JumpDest | Instr::Gas | Instr::PushI16(_) => None,
+                Instr::Const(_) => Some(Fault::BadConst),
+                _ if execute_core(&mut FixedStack::default(), &p, instr).is_some() => {
+                    Some(Fault::StackUnderflow)
+                }
                 Instr::Trace => Some(Fault::StackUnderflow),
                 _ => Some(Fault::BadJump),
             };
@@ -297,4 +301,162 @@ fn jumps_replace_normal_pc_advance() {
         )
         .unwrap();
     assert_eq!((result.fault, result.gas_used), (None, 3));
+}
+
+fn core_run(values: &[i64], instr: Instr) -> (Machine, Option<Fault>) {
+    let p = Program::new(values.to_vec(), {
+        let mut code = Vec::new();
+        for index in 0..values.len() {
+            Instr::Const(index as u16).encode(&mut code);
+        }
+        instr.encode(&mut code);
+        Instr::Halt.encode(&mut code);
+        code
+    })
+    .unwrap();
+    let mut machine = Machine::default();
+    let fault = machine
+        .run::<Infallible>(&p, budget(1000), |_, instr, _| {
+            panic!("instruction déléguée : {instr:?}")
+        })
+        .unwrap()
+        .fault;
+    (machine, fault)
+}
+
+#[test]
+fn core_stack_effects_and_signed_immediates() {
+    for (instr, input, expected) in [
+        (Instr::Drop, vec![1, 2], vec![1]),
+        (Instr::Dup, vec![1, 2], vec![1, 2, 2]),
+        (Instr::Swap, vec![1, 2], vec![2, 1]),
+        (Instr::Over, vec![1, 2], vec![1, 2, 1]),
+        (Instr::Rot, vec![1, 2, 3], vec![2, 3, 1]),
+        (Instr::PushI16(i16::MIN), vec![], vec![-32768]),
+        (Instr::ConstX, vec![42, 0], vec![42, 42]),
+    ] {
+        let (m, f) = core_run(&input, instr);
+        assert_eq!(f, None);
+        assert_eq!(m.state().stack.as_slice(), expected);
+    }
+}
+
+#[test]
+fn arithmetic_logic_and_operand_order() {
+    for (instr, input, expected) in [
+        (Instr::Add, vec![i64::MAX, 1], i64::MIN),
+        (Instr::Sub, vec![i64::MIN, 1], i64::MAX),
+        (Instr::Sub, vec![7, 2], 5),
+        (Instr::Mul, vec![i64::MAX, 2], -2),
+        (Instr::Div, vec![i64::MIN, -1], i64::MIN),
+        (Instr::Mod, vec![i64::MIN, -1], 0),
+        (Instr::Div, vec![-7, 2], -3),
+        (Instr::Mod, vec![-7, 2], -1),
+        (Instr::Neg, vec![i64::MIN], i64::MIN),
+        (Instr::Eq, vec![7, 7], 1),
+        (Instr::Eq, vec![7, 2], 0),
+        (Instr::Lt, vec![-1, 2], 1),
+        (Instr::Lt, vec![2, -1], 0),
+        (Instr::Gt, vec![2, -1], 1),
+        (Instr::Gt, vec![-1, 2], 0),
+        (Instr::Not, vec![0], 1),
+        (Instr::Not, vec![-1], 0),
+        (Instr::BNot, vec![0], -1),
+        (Instr::BNot, vec![-1], 0),
+        (Instr::And, vec![-1, 10], 10),
+        (Instr::Or, vec![8, 3], 11),
+        (Instr::Xor, vec![-1, 10], -11),
+    ] {
+        let (m, f) = core_run(&input, instr);
+        assert_eq!(f, None, "{instr:?}");
+        assert_eq!(m.state().stack.as_slice(), &[expected], "{instr:?}");
+    }
+}
+
+#[test]
+fn shifts_cover_sign_and_count_boundaries() {
+    for a in [i64::MIN, -7, -1, 0, 7, i64::MAX] {
+        for n in [i64::MIN, -1, 0, 1, 63, 64, 65, i64::MAX] {
+            for instr in [Instr::Shl, Instr::Shr, Instr::Sar] {
+                let expected = match instr {
+                    Instr::Shl => {
+                        if (0..64).contains(&n) {
+                            ((a as u64) << n) as i64
+                        } else {
+                            0
+                        }
+                    }
+                    Instr::Shr => {
+                        if (0..64).contains(&n) {
+                            ((a as u64) >> n) as i64
+                        } else {
+                            0
+                        }
+                    }
+                    _ => {
+                        if (0..64).contains(&n) {
+                            a >> n
+                        } else {
+                            i64::from(a < 0).wrapping_neg()
+                        }
+                    }
+                };
+                let (m, f) = core_run(&[a, n], instr);
+                assert_eq!(f, None);
+                assert_eq!(m.state().stack.as_slice(), &[expected], "{a} {n} {instr:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn core_faults_and_stack_limits() {
+    let operations = [
+        (Instr::Drop, 1),
+        (Instr::Dup, 1),
+        (Instr::Swap, 2),
+        (Instr::Over, 2),
+        (Instr::Rot, 3),
+        (Instr::ConstX, 1),
+        (Instr::Neg, 1),
+        (Instr::Not, 1),
+        (Instr::BNot, 1),
+        (Instr::Add, 2),
+        (Instr::Sub, 2),
+        (Instr::Mul, 2),
+        (Instr::Div, 2),
+        (Instr::Mod, 2),
+        (Instr::Eq, 2),
+        (Instr::Lt, 2),
+        (Instr::Gt, 2),
+        (Instr::And, 2),
+        (Instr::Or, 2),
+        (Instr::Xor, 2),
+        (Instr::Shl, 2),
+        (Instr::Shr, 2),
+        (Instr::Sar, 2),
+    ];
+    for (instr, required) in operations {
+        for count in 0..required {
+            assert_eq!(
+                core_run(&vec![1; count], instr).1,
+                Some(Fault::StackUnderflow),
+                "{instr:?}"
+            );
+        }
+    }
+    for instr in [Instr::Div, Instr::Mod] {
+        assert_eq!(core_run(&[1, 0], instr).1, Some(Fault::DivByZero));
+    }
+    for index in [-1, 1, i64::MAX] {
+        assert_eq!(core_run(&[index], Instr::ConstX).1, Some(Fault::BadConst));
+    }
+    assert_eq!(core_run(&[], Instr::Const(0)).1, Some(Fault::BadConst));
+    for instr in [Instr::PushI16(1), Instr::Const(0), Instr::Dup, Instr::Over] {
+        assert_eq!(core_run(&[1; 64], instr).1, Some(Fault::StackOverflow));
+        assert_eq!(core_run(&[1; 63], instr).1, None);
+    }
+    for instr in [Instr::Swap, Instr::Rot, Instr::ConstX, Instr::Add] {
+        assert_eq!(core_run(&[1; 64], instr).1, None);
+    }
 }

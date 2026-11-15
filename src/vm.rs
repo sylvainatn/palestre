@@ -187,7 +187,7 @@ pub const fn gas_cost(instr: Instr) -> u16 {
 }
 
 /// Socle B.1–B.2. La sémantique métier des instructions est injectée dans [`Machine::run`].
-/// HALT, JUMPDEST, GAS et TRACE sont traités directement par le cycle.
+/// Les instructions pures de B.3, HALT, JUMPDEST, GAS et TRACE sont intégrées.
 #[derive(Debug)]
 pub struct Machine {
     state: State,
@@ -234,6 +234,7 @@ impl Machine {
 
     /// Exécute un tour avec un budget non nul. Aucun tampon n'est alloué dans cette méthode.
     ///
+    /// Les constantes, opérations de pile, calculs et comparaisons sont intégrés au cycle.
     /// `execute` reçoit l'état, l'instruction et son adresse. Il doit appliquer B.3/B.4,
     /// sans allocation, et renvoyer Next ou une destination validée. Les rappels et le
     /// contrôles d'ACT appartiennent à cette sémantique ; State::action est vidé ici.
@@ -280,7 +281,12 @@ impl Machine {
                         Control::Next
                     })
                     .map_err(ExecutionError::Fault),
-                _ => execute(&mut self.state, instr, self.pc),
+                _ => match execute_core(&mut self.state.stack, program, instr) {
+                    Some(result) => result
+                        .map(|()| Control::Next)
+                        .map_err(ExecutionError::Fault),
+                    None => execute(&mut self.state, instr, self.pc),
+                },
             };
             match effect {
                 Ok(Control::Next) => self.pc += instr.size(),
@@ -296,6 +302,144 @@ impl Machine {
             fault,
             action: self.state.action,
         })
+    }
+}
+
+// None réserve les instructions hors de ce ticket à la fonction injectée.
+fn execute_core(
+    stack: &mut FixedStack<i64, STACK_SIZE>,
+    program: &Program,
+    instr: Instr,
+) -> Option<Result<(), Fault>> {
+    let mut result = || {
+        let value = match instr {
+            Instr::Const(index) => *program
+                .constants()
+                .get(usize::from(index))
+                .ok_or(Fault::BadConst)?,
+            Instr::ConstX => {
+                let index = stack.pop(Fault::StackUnderflow)?;
+                let index = usize::try_from(index).map_err(|_| Fault::BadConst)?;
+                *program.constants().get(index).ok_or(Fault::BadConst)?
+            }
+            Instr::PushI16(value) => i64::from(value),
+            Instr::Drop => {
+                stack.pop(Fault::StackUnderflow)?;
+                return Ok(());
+            }
+            Instr::Dup => {
+                let a = stack.pop(Fault::StackUnderflow)?;
+                stack.push(a, Fault::StackOverflow)?;
+                a
+            }
+            Instr::Swap | Instr::Over => {
+                let b = stack.pop(Fault::StackUnderflow)?;
+                let a = stack.pop(Fault::StackUnderflow)?;
+                if instr == Instr::Swap {
+                    stack.push(b, Fault::StackOverflow)?;
+                    a
+                } else {
+                    stack.push(a, Fault::StackOverflow)?;
+                    stack.push(b, Fault::StackOverflow)?;
+                    a
+                }
+            }
+            Instr::Rot => {
+                let c = stack.pop(Fault::StackUnderflow)?;
+                let b = stack.pop(Fault::StackUnderflow)?;
+                let a = stack.pop(Fault::StackUnderflow)?;
+                stack.push(b, Fault::StackOverflow)?;
+                stack.push(c, Fault::StackOverflow)?;
+                a
+            }
+            Instr::Neg | Instr::Not | Instr::BNot => {
+                let a = stack.pop(Fault::StackUnderflow)?;
+                match instr {
+                    Instr::Neg => a.wrapping_neg(),
+                    Instr::Not => i64::from(a == 0),
+                    _ => !a,
+                }
+            }
+            Instr::Add
+            | Instr::Sub
+            | Instr::Mul
+            | Instr::Div
+            | Instr::Mod
+            | Instr::Eq
+            | Instr::Lt
+            | Instr::Gt
+            | Instr::And
+            | Instr::Or
+            | Instr::Xor
+            | Instr::Shl
+            | Instr::Shr
+            | Instr::Sar => {
+                let b = stack.pop(Fault::StackUnderflow)?;
+                let a = stack.pop(Fault::StackUnderflow)?;
+                match instr {
+                    Instr::Add => a.wrapping_add(b),
+                    Instr::Sub => a.wrapping_sub(b),
+                    Instr::Mul => a.wrapping_mul(b),
+                    Instr::Div | Instr::Mod => {
+                        if b == 0 {
+                            return Err(Fault::DivByZero);
+                        }
+                        if instr == Instr::Div {
+                            a.wrapping_div(b)
+                        } else {
+                            a.wrapping_rem(b)
+                        }
+                    }
+                    Instr::Eq => i64::from(a == b),
+                    Instr::Lt => i64::from(a < b),
+                    Instr::Gt => i64::from(a > b),
+                    Instr::And => a & b,
+                    Instr::Or => a | b,
+                    Instr::Xor => a ^ b,
+                    // Vérifier le compte avant le décalage : Rust masque autrement les grands comptes.
+                    _ if !(0..=63).contains(&b) => {
+                        if instr == Instr::Sar && a < 0 {
+                            -1
+                        } else {
+                            0
+                        }
+                    }
+                    Instr::Shl => ((a as u64) << b) as i64,
+                    Instr::Shr => ((a as u64) >> b) as i64,
+                    _ => a >> b,
+                }
+            }
+            _ => return Ok(()),
+        };
+        stack.push(value, Fault::StackOverflow)
+    };
+    match instr {
+        Instr::Const(_)
+        | Instr::ConstX
+        | Instr::PushI16(_)
+        | Instr::Drop
+        | Instr::Dup
+        | Instr::Swap
+        | Instr::Over
+        | Instr::Rot
+        | Instr::Neg
+        | Instr::Not
+        | Instr::BNot
+        | Instr::Add
+        | Instr::Sub
+        | Instr::Mul
+        | Instr::Div
+        | Instr::Mod
+        | Instr::Eq
+        | Instr::Lt
+        | Instr::Gt
+        | Instr::And
+        | Instr::Or
+        | Instr::Xor
+        | Instr::Shl
+        | Instr::Shr
+        | Instr::Sar => Some(result()),
+        _ => None,
     }
 }
 
