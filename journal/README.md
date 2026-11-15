@@ -21,5 +21,8 @@ Règles que ce journal s'impose :
 | D-003 | [Lire `case.toml` sans la crate `toml`](D-003-lire-case-toml-sans-la-crate-toml.md) | `proposée` | 2026-10-18 |
 | D-004 | [Contrat entre la VM et son environnement](D-004-contrat-env.md) | `proposée` | 2026-11-13 |
 | D-005 | [État de la VM et cycle d'exécution](D-005-etat-vm-et-cycle.md) | `proposée` | 2026-11-13 |
+| D-006 | [Instructions pures](D-006-instructions-pures.md) | `proposée` | 2026-11-15 |
+| D-007 | [Mémoire, sauts et appels](D-007-memoire-sauts-appels.md) | `proposée` | 2026-11-15 |
+| D-008 | [Branchement des rappels Env](D-008-rappels-env.md) | `proposée` | 2026-11-15 |
 
 La [revue du 2026-11-13](verification-2026-11-13.md) complète D-001 à D-003 sans modifier leur date d'ouverture ni consigner une adoption humaine. D-004 prépare le contrat `Env` avant l'implémentation de la VM.

@@ -132,6 +132,20 @@ impl<E> From<Fault> for ExecutionError<E> {
     }
 }
 
+/// Interactions synchrones avec l'hôte, sans accès aux piles ni à la mémoire.
+/// Les implémentations doivent préparer leurs tampons avant le tour, sans allocation pendant les rappels.
+pub trait Env {
+    /// Incident technique : interrompt l'exécution sans résultat de tour.
+    type Error;
+
+    /// Valeur ou faute normative du capteur ; une erreur extérieure est technique.
+    fn sense(&mut self, sensor: u8) -> Result<Result<i64, Fault>, Self::Error>;
+    /// Issue ordinaire de l'action validée par la VM.
+    fn act(&mut self, kind: u8, arg: i64) -> Result<bool, Self::Error>;
+    /// Tirage entièrement fourni par l'hôte.
+    fn rand(&mut self) -> Result<i64, Self::Error>;
+}
+
 /// Résultat emprunté : aucune copie allouée de la trace à la fin du tour.
 #[derive(Debug)]
 pub struct TurnResult<'a> {
@@ -186,7 +200,7 @@ pub const fn gas_cost(instr: Instr) -> u16 {
     }
 }
 
-/// Socle B.1–B.2. La sémantique métier des instructions est injectée dans [`Machine::run`].
+/// Machine B.1–B.7 ; seules les interactions sont déléguées à [`Env`].
 /// Pile, calculs, mémoire, sauts et appels de B.3–B.4 sont intégrés.
 #[derive(Debug)]
 pub struct Machine {
@@ -232,14 +246,48 @@ impl Machine {
         self.gas_remaining
     }
 
-    /// Exécute un tour avec un budget non nul. Aucun tampon n'est alloué dans cette méthode.
-    ///
-    /// Les constantes, opérations de pile, calculs et comparaisons sont intégrés au cycle.
-    /// `execute` reçoit les instructions environnementales, avec l'état et leur adresse.
-    /// Il doit les exécuter sans allocation. Les rappels et les
-    /// contrôles d'ACT appartiennent à cette sémantique ; State::action est vidé ici.
-    /// Une faute est rendue dans TurnResult ; une erreur technique est propagée sans résultat.
-    pub fn run<E>(
+    /// Exécute un tour en déléguant SENSE, ACT et RAND à l'environnement.
+    /// Une faute rend un résultat conservant mémoire, trace et action ; une erreur technique
+    /// est propagée sans résultat. Aucun tampon n'est alloué dans la VM pendant le tour.
+    pub fn run<E: Env>(
+        &mut self,
+        program: &Program,
+        budget: NonZeroU16,
+        env: &mut E,
+    ) -> Result<TurnResult<'_>, E::Error> {
+        self.run_cycle(program, budget, |state, instr, _| {
+            match instr {
+                Instr::Sense(sensor) => {
+                    ensure_stack_room(&state.stack)?;
+                    let value = env.sense(sensor).map_err(ExecutionError::Environment)??;
+                    state.stack.push(value, Fault::StackOverflow)?;
+                }
+                Instr::Rand => {
+                    ensure_stack_room(&state.stack)?;
+                    let value = env.rand().map_err(ExecutionError::Environment)?;
+                    state.stack.push(value, Fault::StackOverflow)?;
+                }
+                Instr::Act(kind) => {
+                    if state.action.is_some() {
+                        return Err(Fault::AlreadyActed.into());
+                    }
+                    if kind > 3 {
+                        return Err(Fault::BadAction.into());
+                    }
+                    let arg = state.stack.pop(Fault::StackUnderflow)?;
+                    let ok = env.act(kind, arg).map_err(ExecutionError::Environment)?;
+                    state.action = Some(Action { kind, arg, ok });
+                    state.stack.push(i64::from(ok), Fault::StackOverflow)?;
+                }
+                // Le cycle traite toutes les autres instructions avant cette fonction.
+                _ => return Err(Fault::BadOpcode.into()),
+            }
+            Ok(Control::Next)
+        })
+    }
+
+    // Point d'injection privé conservé pour isoler les tests du cycle normatif.
+    fn run_cycle<E>(
         &mut self,
         program: &Program,
         budget: NonZeroU16,
@@ -307,6 +355,14 @@ impl Machine {
             fault,
             action: self.state.action,
         })
+    }
+}
+
+fn ensure_stack_room(stack: &FixedStack<i64, STACK_SIZE>) -> Result<(), Fault> {
+    if stack.as_slice().len() == STACK_SIZE {
+        Err(Fault::StackOverflow)
+    } else {
+        Ok(())
     }
 }
 

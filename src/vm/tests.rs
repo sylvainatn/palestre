@@ -27,7 +27,9 @@ fn decoding_precedes_gas_and_execution() {
         (vec![0x03], Fault::StackUnderflow, 1),
     ] {
         let mut machine = Machine::default();
-        let result = machine.run(&program(&code), budget(1), execute).unwrap();
+        let result = machine
+            .run_cycle(&program(&code), budget(1), execute)
+            .unwrap();
         assert_eq!((result.fault, result.gas_used), (Some(fault), used));
     }
 }
@@ -36,7 +38,7 @@ fn decoding_precedes_gas_and_execution() {
 fn insufficient_gas_is_not_charged_and_does_not_call_executor() {
     let mut machine = Machine::default();
     let result = machine
-        .run::<Infallible>(&program(&[0x13]), budget(6), |_, _, _| {
+        .run_cycle::<Infallible>(&program(&[0x13]), budget(6), |_, _, _| {
             panic!("instruction refusée exécutée")
         })
         .unwrap();
@@ -106,7 +108,7 @@ fn normative_costs_and_budget_boundaries_for_every_opcode() {
         prefixed.extend_from_slice(&code);
         if cost > 0 {
             let result = machine
-                .run::<Infallible>(&program(&prefixed), budget(cost), |_, _, _| {
+                .run_cycle::<Infallible>(&program(&prefixed), budget(cost), |_, _, _| {
                     panic!("instruction refusée exécutée : {instr:?}")
                 })
                 .unwrap();
@@ -117,7 +119,7 @@ fn normative_costs_and_budget_boundaries_for_every_opcode() {
         for available in [cost.max(1), cost + 1] {
             let mut called = false;
             let result = machine
-                .run::<Infallible>(&p, budget(available), |_, actual, pc| {
+                .run_cycle::<Infallible>(&p, budget(available), |_, actual, pc| {
                     assert_eq!((actual, pc), (instr, 0));
                     called = true;
                     // Une faute injectée isole le cycle de la sémantique métier.
@@ -162,7 +164,7 @@ fn gas_reports_remaining_after_its_charge_at_budget_limits() {
     let mut machine = Machine::default();
     let p = program(&[0x71, 0x00]);
     for available in [1, 2, 3, 1000, u16::MAX] {
-        let result = machine.run(&p, budget(available), execute).unwrap();
+        let result = machine.run_cycle(&p, budget(available), execute).unwrap();
         if available == 1 {
             assert_eq!((result.fault, result.gas_used), (Some(Fault::OutOfGas), 0));
             assert!(machine.state().stack.as_slice().is_empty());
@@ -180,7 +182,7 @@ fn gas_reports_remaining_after_its_charge_at_budget_limits() {
 fn halt_is_free_even_after_exhausting_budget() {
     let mut machine = Machine::default();
     let result = machine
-        .run(&program(&[0x43, 0x00]), budget(1), execute)
+        .run_cycle(&program(&[0x43, 0x00]), budget(1), execute)
         .unwrap();
     assert_eq!((result.fault, result.gas_used), (None, 1));
 }
@@ -194,10 +196,10 @@ fn full_stack_without_gas_reports_out_of_gas() {
     let mut machine = Machine::default();
     let p = program(&code);
     assert_eq!(
-        machine.run(&p, budget(64), execute).unwrap().fault,
+        machine.run_cycle(&p, budget(64), execute).unwrap().fault,
         Some(Fault::OutOfGas)
     );
-    let result = machine.run(&p, budget(65), execute).unwrap();
+    let result = machine.run_cycle(&p, budget(65), execute).unwrap();
     assert_eq!(
         (result.fault, result.gas_used),
         (Some(Fault::StackOverflow), 65)
@@ -210,7 +212,7 @@ fn state_resets_but_memory_persists_and_trace_storage_is_reused() {
     let trace_ptr = machine.trace.as_ptr();
     let capacity = machine.trace.capacity();
     let p = program(&[0x02, 0, 42, 0x33, 7, 0x71, 0xf0, 0x00]);
-    let result = machine.run(&p, budget(20), execute).unwrap();
+    let result = machine.run_cycle(&p, budget(20), execute).unwrap();
     assert_eq!(result.memory[7], 42);
     assert_eq!(result.trace, &[13]);
     assert_eq!(result.gas_used, 8);
@@ -225,7 +227,9 @@ fn state_resets_but_memory_persists_and_trace_storage_is_reused() {
         arg: 1,
         ok: false,
     });
-    let result = machine.run(&program(&[0x00]), budget(1), execute).unwrap();
+    let result = machine
+        .run_cycle(&program(&[0x00]), budget(1), execute)
+        .unwrap();
     assert_eq!(result.memory[7], 42);
     assert!(result.trace.is_empty());
     assert_eq!(result.action, None);
@@ -241,7 +245,7 @@ fn state_resets_but_memory_persists_and_trace_storage_is_reused() {
 fn fault_preserves_prior_writes_and_trace() {
     let mut machine = Machine::default();
     let result = machine
-        .run(
+        .run_cycle(
             &program(&[0x02, 0, 42, 0x33, 7, 0x71, 0xf0, 0x03]),
             budget(20),
             execute,
@@ -256,13 +260,13 @@ fn fault_preserves_prior_writes_and_trace() {
 #[test]
 fn technical_error_has_no_turn_result_and_next_run_resets() {
     let mut machine = Machine::default();
-    let result = machine.run(&program(&[0x70]), budget(10), |_, _, _| {
+    let result = machine.run_cycle(&program(&[0x70]), budget(10), |_, _, _| {
         Err(ExecutionError::Environment("coupure"))
     });
     assert_eq!(result.unwrap_err(), "coupure");
     assert_eq!(machine.gas_remaining(), 5);
     assert!(machine
-        .run(&program(&[0x00]), budget(1), execute)
+        .run_cycle(&program(&[0x00]), budget(1), execute)
         .unwrap()
         .fault
         .is_none());
@@ -293,7 +297,7 @@ fn fixed_stacks_enforce_limits_and_reuse_slots() {
 fn jumps_replace_normal_pc_advance() {
     let mut machine = Machine::default();
     let result = machine
-        .run::<Infallible>(
+        .run_cycle::<Infallible>(
             &program(&[0x40, 0, 1, 0xff, 0x43, 0x00]),
             budget(3),
             |_, _, _| panic!("saut délégué"),
@@ -315,7 +319,7 @@ fn core_run(values: &[i64], instr: Instr) -> (Machine, Option<Fault>) {
     .unwrap();
     let mut machine = Machine::default();
     let fault = machine
-        .run::<Infallible>(&p, budget(1000), |_, instr, _| {
+        .run_cycle::<Infallible>(&p, budget(1000), |_, instr, _| {
             panic!("instruction déléguée : {instr:?}")
         })
         .unwrap()
@@ -467,7 +471,7 @@ fn run_instructions(instructions: &[Instr], available: u16) -> (Machine, Option<
     }
     let mut machine = Machine::default();
     let result = machine
-        .run::<Infallible>(&program(&code), budget(available), |_, i, _| {
+        .run_cycle::<Infallible>(&program(&code), budget(available), |_, i, _| {
             panic!("instruction déléguée : {i:?}")
         })
         .unwrap();
@@ -494,7 +498,7 @@ fn memory_forms_cover_all_addresses_and_persist() {
         );
         assert_eq!(f, None);
         assert_eq!(m.state().stack.as_slice(), &[-42, 17]);
-        let result = m.run(&program(&[0]), budget(1), execute).unwrap();
+        let result = m.run_cycle(&program(&[0]), budget(1), execute).unwrap();
         assert_eq!(result.memory[usize::from(addr)], 17);
     }
     for instr in [Instr::LoadX, Instr::StoreX] {
@@ -598,5 +602,250 @@ fn calls_return_without_jumpdest_and_enforce_call_stack() {
         let (m, f, g) = run_instructions(&code, 1000);
         assert_eq!((f, g), (Some(Fault::CallStackOverflow), used));
         assert_eq!(m.state().calls.as_slice().len(), 16);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Reply {
+    Sense(u8, Result<Result<i64, Fault>, &'static str>),
+    Act(u8, i64, Result<bool, &'static str>),
+    Rand(Result<i64, &'static str>),
+}
+
+struct Script<'a> {
+    replies: &'a [Reply],
+    cursor: usize,
+}
+impl<'a> Script<'a> {
+    fn new(replies: &'a [Reply]) -> Self {
+        Self { replies, cursor: 0 }
+    }
+    fn next(&mut self) -> Reply {
+        let reply = *self.replies.get(self.cursor).expect("rappel imprévu");
+        self.cursor += 1;
+        reply
+    }
+    fn finished(&self) {
+        assert_eq!(self.cursor, self.replies.len());
+    }
+}
+impl Env for Script<'_> {
+    type Error = &'static str;
+    fn sense(&mut self, sensor: u8) -> Result<Result<i64, Fault>, Self::Error> {
+        match self.next() {
+            Reply::Sense(expected, result) => {
+                assert_eq!(sensor, expected);
+                result
+            }
+            other => panic!("SENSE inattendu : {other:?}"),
+        }
+    }
+    fn act(&mut self, kind: u8, arg: i64) -> Result<bool, Self::Error> {
+        match self.next() {
+            Reply::Act(k, a, result) => {
+                assert_eq!((kind, arg), (k, a));
+                result
+            }
+            other => panic!("ACT inattendu : {other:?}"),
+        }
+    }
+    fn rand(&mut self) -> Result<i64, Self::Error> {
+        match self.next() {
+            Reply::Rand(result) => result,
+            other => panic!("RAND inattendu : {other:?}"),
+        }
+    }
+}
+fn assembled(instructions: &[Instr]) -> Program {
+    let mut code = Vec::new();
+    for instr in instructions {
+        instr.encode(&mut code);
+    }
+    program(&code)
+}
+
+#[test]
+fn environment_transcript_is_ordered_and_deterministic() {
+    let p = assembled(&[
+        Instr::Sense(255),
+        Instr::Trace,
+        Instr::Rand,
+        Instr::Act(2),
+        Instr::Trace,
+        Instr::Rand,
+        Instr::Trace,
+        Instr::Halt,
+    ]);
+    let replies = [
+        Reply::Sense(255, Ok(Ok(-9))),
+        Reply::Rand(Ok(42)),
+        Reply::Act(2, 42, Ok(false)),
+        Reply::Rand(Ok(i64::MIN)),
+    ];
+    let mut m = Machine::default();
+    for _ in 0..2 {
+        let mut env = Script::new(&replies);
+        let result = m.run(&p, budget(100), &mut env).unwrap();
+        assert_eq!(result.fault, None);
+        assert_eq!(result.gas_used, 33);
+        assert_eq!(result.trace, &[-9, 0, i64::MIN]);
+        assert_eq!(
+            result.action,
+            Some(Action {
+                kind: 2,
+                arg: 42,
+                ok: false
+            })
+        );
+        env.finished();
+    }
+}
+
+#[test]
+fn actions_return_boolean_even_on_full_stack_and_reset_each_turn() {
+    for ok in [false, true] {
+        let mut instructions = vec![Instr::PushI16(7); 64];
+        instructions.extend([Instr::Act(0), Instr::Halt]);
+        let mut m = Machine::default();
+        for _ in 0..2 {
+            let replies = [Reply::Act(0, 7, Ok(ok))];
+            let mut env = Script::new(&replies);
+            let result = m
+                .run(&assembled(&instructions), budget(100), &mut env)
+                .unwrap();
+            assert_eq!(result.fault, None);
+            assert_eq!(
+                result.action,
+                Some(Action {
+                    kind: 0,
+                    arg: 7,
+                    ok
+                })
+            );
+            assert_eq!(m.state().stack.as_slice().len(), 64);
+            assert_eq!(m.state().stack.as_slice().last(), Some(&i64::from(ok)));
+            env.finished();
+        }
+    }
+}
+
+#[test]
+fn local_rejections_do_not_call_environment() {
+    for (instructions, available, fault, used) in [
+        (vec![Instr::Act(255)], 20, Fault::BadAction, 12),
+        (vec![Instr::Act(0)], 20, Fault::StackUnderflow, 12),
+        (vec![Instr::Sense(0)], 7, Fault::OutOfGas, 0),
+        (vec![Instr::Rand], 4, Fault::OutOfGas, 0),
+        (
+            vec![Instr::PushI16(1), Instr::Act(0)],
+            12,
+            Fault::OutOfGas,
+            1,
+        ),
+    ] {
+        let mut env = Script::new(&[]);
+        let mut m = Machine::default();
+        let result = m
+            .run(&assembled(&instructions), budget(available), &mut env)
+            .unwrap();
+        assert_eq!(
+            (result.fault, result.gas_used, result.action),
+            (Some(fault), used, None)
+        );
+        env.finished();
+    }
+    for instr in [Instr::Sense(0), Instr::Rand] {
+        let mut code = vec![Instr::PushI16(1); 64];
+        code.push(instr);
+        let mut m = Machine::default();
+        let mut env = Script::new(&[]);
+        let result = m.run(&assembled(&code), budget(100), &mut env).unwrap();
+        assert_eq!(result.fault, Some(Fault::StackOverflow));
+        env.finished();
+    }
+    for ok in [false, true] {
+        let mut m = Machine::default();
+        let replies = [Reply::Act(0, 1, Ok(ok))];
+        let mut env = Script::new(&replies);
+        let p = assembled(&[Instr::PushI16(1), Instr::Act(0), Instr::Drop, Instr::Act(0)]);
+        let result = m.run(&p, budget(100), &mut env).unwrap();
+        assert_eq!(result.fault, Some(Fault::AlreadyActed));
+        assert_eq!(
+            result.action,
+            Some(Action {
+                kind: 0,
+                arg: 1,
+                ok
+            })
+        );
+        assert_eq!(result.gas_used, 26);
+        env.finished();
+    }
+}
+
+#[test]
+fn sense_fault_preserves_memory_action_and_trace_and_stops_callbacks() {
+    let p = assembled(&[
+        Instr::PushI16(42),
+        Instr::Store(255),
+        Instr::PushI16(7),
+        Instr::Trace,
+        Instr::PushI16(2),
+        Instr::Act(1),
+        Instr::Sense(99),
+        Instr::Rand,
+    ]);
+    for fault in [Fault::BadSensor, Fault::OutOfBounds] {
+        let replies = [Reply::Act(1, 2, Ok(true)), Reply::Sense(99, Ok(Err(fault)))];
+        let mut env = Script::new(&replies);
+        let mut m = Machine::default();
+        let result = m.run(&p, budget(100), &mut env).unwrap();
+        assert_eq!(result.fault, Some(fault));
+        assert_eq!(result.memory[255], 42);
+        assert_eq!(result.trace, &[7]);
+        assert_eq!(result.gas_used, 28);
+        assert_eq!(
+            result.action,
+            Some(Action {
+                kind: 1,
+                arg: 2,
+                ok: true
+            })
+        );
+        env.finished();
+    }
+}
+
+#[test]
+fn technical_callback_errors_interrupt_without_result_and_allow_next_turn() {
+    for (instr, reply, cost) in [
+        (Instr::Sense(1), Reply::Sense(1, Err("coupure")), 8),
+        (Instr::Rand, Reply::Rand(Err("coupure")), 5),
+        (Instr::Act(3), Reply::Act(3, 7, Err("coupure")), 12),
+    ] {
+        let mut m = Machine::default();
+        let replies = [reply];
+        let mut env = Script::new(&replies);
+        let p = assembled(&[
+            Instr::PushI16(42),
+            Instr::Store(0),
+            Instr::PushI16(7),
+            Instr::Trace,
+            Instr::PushI16(7),
+            instr,
+            Instr::Rand,
+        ]);
+        assert_eq!(m.run(&p, budget(100), &mut env).unwrap_err(), "coupure");
+        assert_eq!(m.gas_remaining(), 100 - 8 - cost);
+        assert_eq!(m.state().memory[0], 42);
+        assert_eq!(m.state().action, None);
+        env.finished();
+        let result = m
+            .run(&program(&[0]), budget(1), &mut Script::new(&[]))
+            .unwrap();
+        assert_eq!(result.fault, None);
+        assert!(result.trace.is_empty());
+        assert_eq!(result.memory[0], 42);
+        assert!(m.state().stack.as_slice().is_empty());
     }
 }
