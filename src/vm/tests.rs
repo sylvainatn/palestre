@@ -14,18 +14,7 @@ fn execute(
     instr: Instr,
     _: usize,
 ) -> Result<Control, ExecutionError<Infallible>> {
-    match instr {
-        Instr::PushI16(value) => state.stack.push(i64::from(value), Fault::StackOverflow)?,
-        Instr::Drop => {
-            state.stack.pop(Fault::StackUnderflow)?;
-        }
-        Instr::Store(addr) => {
-            let value = state.stack.pop(Fault::StackUnderflow)?;
-            state.memory[usize::from(addr)] = value;
-        }
-        _ => panic!("instruction inattendue : {instr:?}"),
-    }
-    Ok(Control::Next)
+    panic!("instruction inattendue : {instr:?}, état : {state:?}");
 }
 
 #[test]
@@ -138,6 +127,16 @@ fn normative_costs_and_budget_boundaries_for_every_opcode() {
             let expected = match instr {
                 Instr::Halt | Instr::JumpDest | Instr::Gas | Instr::PushI16(_) => None,
                 Instr::Const(_) => Some(Fault::BadConst),
+                Instr::Load(_) => None,
+                Instr::Jmp(_) | Instr::Call(_) => Some(Fault::BadJump),
+                Instr::Return => Some(Fault::CallStackUnderflow),
+                Instr::LoadX
+                | Instr::StoreX
+                | Instr::Store(_)
+                | Instr::Jz(_)
+                | Instr::Jnz(_)
+                | Instr::JmpX
+                | Instr::CallX => Some(Fault::StackUnderflow),
                 _ if execute_core(&mut FixedStack::default(), &p, instr).is_some() => {
                     Some(Fault::StackUnderflow)
                 }
@@ -149,7 +148,10 @@ fn normative_costs_and_budget_boundaries_for_every_opcode() {
                 (expected, cost),
                 "{instr:?}"
             );
-            assert_eq!(called, expected == Some(Fault::BadJump));
+            assert_eq!(
+                called,
+                matches!(instr, Instr::Sense(_) | Instr::Act(_) | Instr::Rand)
+            );
             assert_eq!(machine.gas_remaining(), available - cost);
         }
     }
@@ -294,10 +296,7 @@ fn jumps_replace_normal_pc_advance() {
         .run::<Infallible>(
             &program(&[0x40, 0, 1, 0xff, 0x43, 0x00]),
             budget(3),
-            |_, instr, pc| {
-                assert_eq!((instr, pc), (Instr::Jmp(1), 0));
-                Ok(Control::Jump(4))
-            },
+            |_, _, _| panic!("saut délégué"),
         )
         .unwrap();
     assert_eq!((result.fault, result.gas_used), (None, 3));
@@ -458,5 +457,146 @@ fn core_faults_and_stack_limits() {
     }
     for instr in [Instr::Swap, Instr::Rot, Instr::ConstX, Instr::Add] {
         assert_eq!(core_run(&[1; 64], instr).1, None);
+    }
+}
+
+fn run_instructions(instructions: &[Instr], available: u16) -> (Machine, Option<Fault>, u16) {
+    let mut code = Vec::new();
+    for instr in instructions {
+        instr.encode(&mut code);
+    }
+    let mut machine = Machine::default();
+    let result = machine
+        .run::<Infallible>(&program(&code), budget(available), |_, i, _| {
+            panic!("instruction déléguée : {i:?}")
+        })
+        .unwrap();
+    let (fault, gas) = (result.fault, result.gas_used);
+    (machine, fault, gas)
+}
+
+#[test]
+fn memory_forms_cover_all_addresses_and_persist() {
+    for addr in 0..=255 {
+        let (mut m, f, _) = run_instructions(
+            &[
+                Instr::PushI16(-42),
+                Instr::Store(addr),
+                Instr::PushI16(i16::from(addr)),
+                Instr::LoadX,
+                Instr::PushI16(17),
+                Instr::PushI16(i16::from(addr)),
+                Instr::StoreX,
+                Instr::Load(addr),
+                Instr::Halt,
+            ],
+            100,
+        );
+        assert_eq!(f, None);
+        assert_eq!(m.state().stack.as_slice(), &[-42, 17]);
+        let result = m.run(&program(&[0]), budget(1), execute).unwrap();
+        assert_eq!(result.memory[usize::from(addr)], 17);
+    }
+    for instr in [Instr::LoadX, Instr::StoreX] {
+        for addr in [-1, 256, i64::MIN, i64::MAX] {
+            assert_eq!(core_run(&[123, addr], instr).1, Some(Fault::OutOfBounds));
+        }
+    }
+    for instr in [Instr::LoadX, Instr::StoreX, Instr::Store(0)] {
+        assert_eq!(core_run(&[], instr).1, Some(Fault::StackUnderflow));
+    }
+    assert_eq!(core_run(&[1], Instr::StoreX).1, Some(Fault::StackUnderflow));
+    assert_eq!(
+        core_run(&[1; 64], Instr::Load(0)).1,
+        Some(Fault::StackOverflow)
+    );
+    assert_eq!(core_run(&[1; 64], Instr::LoadX).1, None);
+}
+
+#[test]
+fn conditional_jumps_validate_only_taken_targets() {
+    for (instr, condition, taken) in [
+        (Instr::Jz(i16::MIN), 0, true),
+        (Instr::Jz(i16::MIN), -1, false),
+        (Instr::Jnz(i16::MAX), -1, true),
+        (Instr::Jnz(i16::MAX), 0, false),
+    ] {
+        let (m, f, g) = run_instructions(&[Instr::PushI16(condition), instr, Instr::Halt], 20);
+        assert_eq!(f, if taken { Some(Fault::BadJump) } else { None });
+        assert_eq!(g, 3);
+        assert!(m.state().stack.as_slice().is_empty());
+    }
+    for instr in [Instr::Jz(0), Instr::Jnz(0), Instr::JmpX, Instr::CallX] {
+        assert_eq!(core_run(&[], instr).1, Some(Fault::StackUnderflow));
+    }
+    for instr in [Instr::JmpX, Instr::CallX] {
+        for target in [-1, 0, 4, 32767, i64::MAX] {
+            assert_eq!(core_run(&[target], instr).1, Some(Fault::BadJump));
+        }
+    }
+}
+
+#[test]
+fn relative_jumps_support_both_directions_and_operand_targets() {
+    // Le saut arrive sur le 0x43 de l'opérande de PUSHI16.
+    let (m, f, g) = run_instructions(&[Instr::Jmp(1), Instr::PushI16(0x4300)], 10);
+    assert_eq!((f, g, m.pc()), (None, 3, 5));
+    let (m, f, g) = run_instructions(&[Instr::JumpDest, Instr::Jmp(-4)], 7);
+    assert_eq!((f, g, m.pc()), (Some(Fault::OutOfGas), 7, 1));
+    for offset in [-4, i16::MIN, 0, 1, i16::MAX] {
+        assert_eq!(
+            run_instructions(&[Instr::Jmp(offset), Instr::Halt], 10).1,
+            Some(Fault::BadJump)
+        );
+    }
+}
+
+#[test]
+fn calls_return_without_jumpdest_and_enforce_call_stack() {
+    for instructions in [
+        vec![
+            Instr::Call(1),
+            Instr::Halt,
+            Instr::JumpDest,
+            Instr::PushI16(42),
+            Instr::Return,
+        ],
+        vec![
+            Instr::PushI16(5),
+            Instr::CallX,
+            Instr::Halt,
+            Instr::JumpDest,
+            Instr::PushI16(42),
+            Instr::Return,
+        ],
+    ] {
+        let (m, f, _) = run_instructions(&instructions, 100);
+        assert_eq!(f, None);
+        assert_eq!(m.state().stack.as_slice(), &[42]);
+        assert!(m.state().calls.as_slice().is_empty());
+    }
+    assert_eq!(
+        core_run(&[], Instr::Return).1,
+        Some(Fault::CallStackUnderflow)
+    );
+    // Le retour peut viser code_len : faute de pc au prochain cycle, sans BadJump.
+    let (_, f, _) = run_instructions(
+        &[
+            Instr::Jmp(2),
+            Instr::JumpDest,
+            Instr::Return,
+            Instr::JumpDest,
+            Instr::Call(-6),
+        ],
+        100,
+    );
+    assert_eq!(f, Some(Fault::PcOutOfRange));
+    for (code, used) in [
+        (vec![Instr::JumpDest, Instr::Call(-4)], 119),
+        (vec![Instr::JumpDest, Instr::PushI16(0), Instr::CallX], 153),
+    ] {
+        let (m, f, g) = run_instructions(&code, 1000);
+        assert_eq!((f, g), (Some(Fault::CallStackOverflow), used));
+        assert_eq!(m.state().calls.as_slice().len(), 16);
     }
 }

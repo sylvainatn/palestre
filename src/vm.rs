@@ -187,7 +187,7 @@ pub const fn gas_cost(instr: Instr) -> u16 {
 }
 
 /// Socle B.1–B.2. La sémantique métier des instructions est injectée dans [`Machine::run`].
-/// Les instructions pures de B.3, HALT, JUMPDEST, GAS et TRACE sont intégrées.
+/// Pile, calculs, mémoire, sauts et appels de B.3–B.4 sont intégrés.
 #[derive(Debug)]
 pub struct Machine {
     state: State,
@@ -235,8 +235,8 @@ impl Machine {
     /// Exécute un tour avec un budget non nul. Aucun tampon n'est alloué dans cette méthode.
     ///
     /// Les constantes, opérations de pile, calculs et comparaisons sont intégrés au cycle.
-    /// `execute` reçoit l'état, l'instruction et son adresse. Il doit appliquer B.3/B.4,
-    /// sans allocation, et renvoyer Next ou une destination validée. Les rappels et le
+    /// `execute` reçoit les instructions environnementales, avec l'état et leur adresse.
+    /// Il doit les exécuter sans allocation. Les rappels et les
     /// contrôles d'ACT appartiennent à cette sémantique ; State::action est vidé ici.
     /// Une faute est rendue dans TurnResult ; une erreur technique est propagée sans résultat.
     pub fn run<E>(
@@ -285,7 +285,12 @@ impl Machine {
                     Some(result) => result
                         .map(|()| Control::Next)
                         .map_err(ExecutionError::Fault),
-                    None => execute(&mut self.state, instr, self.pc),
+                    None => {
+                        match execute_memory_control(&mut self.state, program, instr, self.pc) {
+                            Some(result) => result.map_err(ExecutionError::Fault),
+                            None => execute(&mut self.state, instr, self.pc),
+                        }
+                    }
                 },
             };
             match effect {
@@ -302,6 +307,114 @@ impl Machine {
             fault,
             action: self.state.action,
         })
+    }
+}
+
+// B.4 vérifie l'octet cible, sans imposer une frontière d'instruction.
+fn jump_target(program: &Program, target: usize) -> Result<usize, Fault> {
+    match program.code().get(target) {
+        Some(&crate::pbc::JUMPDEST) => Ok(target),
+        _ => Err(Fault::BadJump),
+    }
+}
+
+fn execute_memory_control(
+    state: &mut State,
+    program: &Program,
+    instr: Instr,
+    pc: usize,
+) -> Option<Result<Control, Fault>> {
+    let mut execute = || {
+        match instr {
+            Instr::Load(addr) => {
+                let value = *state
+                    .memory
+                    .get(usize::from(addr))
+                    .ok_or(Fault::OutOfBounds)?;
+                state.stack.push(value, Fault::StackOverflow)?;
+            }
+            Instr::Store(addr) => {
+                let value = state.stack.pop(Fault::StackUnderflow)?;
+                *state
+                    .memory
+                    .get_mut(usize::from(addr))
+                    .ok_or(Fault::OutOfBounds)? = value;
+            }
+            Instr::LoadX | Instr::StoreX => {
+                let addr = state.stack.pop(Fault::StackUnderflow)?;
+                // STOREX lit v addr : l'adresse est au sommet.
+                let value = if instr == Instr::StoreX {
+                    Some(state.stack.pop(Fault::StackUnderflow)?)
+                } else {
+                    None
+                };
+                let addr = usize::try_from(addr).map_err(|_| Fault::OutOfBounds)?;
+                let cell = state.memory.get_mut(addr).ok_or(Fault::OutOfBounds)?;
+                if let Some(value) = value {
+                    *cell = value;
+                } else {
+                    state.stack.push(*cell, Fault::StackOverflow)?;
+                }
+            }
+            Instr::Return => {
+                // Le prochain décodage contrôlera la borne ; aucun marqueur n'est exigé.
+                return Ok(Control::Jump(state.calls.pop(Fault::CallStackUnderflow)?));
+            }
+            Instr::Jmp(_)
+            | Instr::Jz(_)
+            | Instr::Jnz(_)
+            | Instr::Call(_)
+            | Instr::JmpX
+            | Instr::CallX => {
+                let next = pc + instr.size();
+                let target = match instr {
+                    Instr::JmpX | Instr::CallX => {
+                        let target = state.stack.pop(Fault::StackUnderflow)?;
+                        usize::try_from(target).map_err(|_| Fault::BadJump)?
+                    }
+                    Instr::Jmp(offset)
+                    | Instr::Call(offset)
+                    | Instr::Jz(offset)
+                    | Instr::Jnz(offset) => {
+                        if matches!(instr, Instr::Jz(_) | Instr::Jnz(_)) {
+                            let condition = state.stack.pop(Fault::StackUnderflow)?;
+                            let taken = if matches!(instr, Instr::Jz(_)) {
+                                condition == 0
+                            } else {
+                                condition != 0
+                            };
+                            if !taken {
+                                return Ok(Control::Next);
+                            }
+                        }
+                        next.checked_add_signed(isize::from(offset))
+                            .ok_or(Fault::BadJump)?
+                    }
+                    _ => return Ok(Control::Next),
+                };
+                let target = jump_target(program, target)?;
+                if matches!(instr, Instr::Call(_) | Instr::CallX) {
+                    state.calls.push(next, Fault::CallStackOverflow)?;
+                }
+                return Ok(Control::Jump(target));
+            }
+            _ => {}
+        }
+        Ok(Control::Next)
+    };
+    match instr {
+        Instr::Load(_)
+        | Instr::Store(_)
+        | Instr::LoadX
+        | Instr::StoreX
+        | Instr::Jmp(_)
+        | Instr::Jz(_)
+        | Instr::Jnz(_)
+        | Instr::Call(_)
+        | Instr::JmpX
+        | Instr::CallX
+        | Instr::Return => Some(execute()),
+        _ => None,
     }
 }
 
